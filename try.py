@@ -1,12 +1,19 @@
-import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type
 from dataclasses_json import dataclass_json
+from db_api import DBTable, DBField, DataBase, SelectionCriteria, DB_ROOT
 from db_api import DBTable, DBField, DataBase, SelectionCriteria, DB_ROOT
 
 import os
 import json
 import shutil
+
+# להריץ טסט מסוים:
+# py.test -k test_name
+# להריץ עם מדידת זמן:
+# pytest --durations=8
+# להריץ את כל הטסטים:
+# py.test
 
 
 @dataclass_json
@@ -15,9 +22,9 @@ class DBField(DBField):
     name: str
     type: Type
 
-    def __init__(self, name, type_):
+    def __init__(self, name, type):
         self.name = name
-        self.type = type_
+        self.type = type
 
 
 @dataclass_json
@@ -33,20 +40,6 @@ class SelectionCriteria(SelectionCriteria):
         self.value = value
 
 
-def get_str(param, operator, value):
-    if isinstance(param, str):
-        result = f"\"{param}\"" + operator
-    else:
-        result = str(param) + operator
-
-    if isinstance(value, str):
-        return result + f"\"{value}\""
-    else:
-        return result + str(value)
-
-    # return f"\"{param[:-1]}\"" + operator + f"\"{value}\""
-
-
 @dataclass_json
 @dataclass
 class DBTable(DBTable):
@@ -54,9 +47,9 @@ class DBTable(DBTable):
     fields: List[DBField]
     key_field_name: str
 
-    def __init__(self, name: str, fields: List[DBField], key_field_name: str):
-        if key_field_name not in [field.name for field in fields]:
-            raise ValueError
+    def __init__(self, name, fields, key_field_name):
+        if key_field_name not in [filed.name for filed in fields]:
+            raise KeyError
         self.key_field_name = key_field_name
         self.fields = fields
         self.name = name
@@ -64,32 +57,27 @@ class DBTable(DBTable):
             with open(f"{DB_ROOT}/{self.name}/{self.name}{1}.json", "w", encoding='utf-8') as data_file:
                 json.dump({}, data_file)
 
-    def add_count(self, count):
-        if count != 0:
-            with open(f"{DB_ROOT}/{self.name}/{self.name}.json", encoding='utf-8') as file:
-                file_information = json.load(file)
-
-            file_information["len"] += count
-
-            with open(f"{DB_ROOT}/{self.name}/{self.name}.json", "w", encoding='utf-8') as file:
-                json.dump(file_information, file)
-
     # TODO: ijson
     def count(self) -> int:
-        with open(f"{DB_ROOT}/{self.name}/{self.name}.json", encoding='utf-8') as file:
-            file_information = json.load(file)
+        count = 0
+        num = 1
+        while os.path.isfile(f"{DB_ROOT}/{self.name}/{self.name}{num}.json"):
+            with open(f"{DB_ROOT}/{self.name}/{self.name}{num}.json", encoding='utf-8') as file:
+                count += len(json.load(file))
+            num += 1
 
-        return file_information["len"]
+        return count
 
     def insert_record(self, values: Dict[str, Any]) -> None:
         # check the correctness of the keys
         if self.key_field_name not in values.keys():
             raise KeyError("the key value didn't given")
 
-        dates = [key for key, field in values.items() if isinstance(field, dt.datetime)]
-        for date in dates:
-            values[date] = values[date].strftime('%m%d%Y')
+        for key in values.keys():
+            if key not in [filed.name for filed in self.fields]:
+                raise KeyError(f"the key {key} is not exists in the key fields")
 
+        # add the row
         insert_file = 1
         insert_data = {}
         num = 1
@@ -101,8 +89,8 @@ class DBTable(DBTable):
             for key in my_data.keys():
                 if key == str(values[self.key_field_name]):
                     raise ValueError
-
-            if len(my_data) < 1000 and first:
+            # TODO: change to 1000
+            if len(my_data) < 3 and first:
                 first = False
                 insert_file = num
                 insert_data = my_data
@@ -122,8 +110,6 @@ class DBTable(DBTable):
         with open(f"{DB_ROOT}/{self.name}/{self.name}{insert_file}.json", "w", encoding='utf-8') as file:
             json.dump(insert_data, file)
 
-        self.add_count(1)
-
     def delete_record(self, key: Any) -> None:
         num = 1
         while os.path.isfile(f"{DB_ROOT}/{self.name}/{self.name}{num}.json"):
@@ -134,50 +120,11 @@ class DBTable(DBTable):
                 my_data.pop(str(key))
                 with open(f"{DB_ROOT}/{self.name}/{self.name}{num}.json", "w", encoding='utf-8') as file:
                     json.dump(my_data, file, ensure_ascii=False)
-                self.add_count(-1)
                 return
             num += 1
 
-        raise ValueError
-
-    def get_operation(self, criteria: List[SelectionCriteria], key, row):
-        fields = [field.name for field in self.fields]
-        operation = ""
-        for criterion in criteria:
-            if criterion.operator == "=":
-                criterion.operator = "=="
-
-            if criterion.field_name == self.key_field_name:
-                key_type = [field.type for field in self.fields if self.key_field_name == field.name][0]
-                if isinstance(key_type, str):
-                    operation += get_str(key, criterion.operator, criterion.value) + " and "
-                # TODO: int
-                #  operation += get_str(get_type(key_type)(key), criterion.operator, criterion.value)
-
-                else:
-                    operation += get_str(int(key), criterion.operator, criterion.value) + " and "
-
-            else:
-                if criterion.field_name in fields:
-                    operation += get_str(row[criterion.field_name], criterion.operator, criterion.value) + " and "
-
-        return operation[:-4]
-
     def delete_records(self, criteria: List[SelectionCriteria]) -> None:
-        num = 1
-
-        with open(f"{DB_ROOT}/{self.name}/{self.name}{num}.json", encoding='utf-8') as f:
-            my_data = json.load(f)
-
-        count = 0
-        deleted_keys = []
-
-        for key, item in my_data.items():
-            if eval(self.get_operation(criteria, key, item)):
-                deleted_keys.append(key)
-                count += 1
-
-        self.add_count(-count)
+        raise NotImplementedError
 
     # TODO: ijson
     def get_record(self, key: Any) -> Dict[str, Any]:
@@ -196,6 +143,10 @@ class DBTable(DBTable):
         raise KeyError
 
     def update_record(self, key: Any, values: Dict[str, Any]) -> None:
+        for key in values.keys():
+            if key not in [filed.name for filed in self.fields]:
+                raise KeyError(f"the key {key} is not exists in the key fields")
+
         num = 1
         while os.path.isfile(f"{DB_ROOT}/{self.name}/{self.name}{num}.json"):
             with open(f"{DB_ROOT}/{self.name}/{self.name}{num}.json", encoding='utf-8') as f:
@@ -213,33 +164,10 @@ class DBTable(DBTable):
 
     def query_table(self, criteria: List[SelectionCriteria]) \
             -> List[Dict[str, Any]]:
-        result = []
-        num = 1
-        while os.path.isfile(f"{DB_ROOT}/{self.name}/{self.name}{num}.json"):
-            with open(f"{DB_ROOT}/{self.name}/{self.name}{num}.json", encoding='utf-8') as f:
-                my_data = json.load(f)
-
-            for key, value in my_data.items():
-                if eval(self.get_operation(criteria, key, value)):
-                    new_data = {self.key_field_name: key}
-                    new_data.update(value)
-                    result.append(new_data)
-
-                num += 1
-
-        return result
+        raise NotImplementedError
 
     def create_index(self, field_to_index: str) -> None:
         raise NotImplementedError
-
-
-def get_type(data):
-    if data == "<class 'int'>":
-        return int
-    if data == "<class 'str'>":
-        return str
-    else:
-        return dt.datetime
 
 
 @dataclass_json
@@ -256,20 +184,13 @@ class DataBase(DataBase):
                      fields: List[DBField],
                      key_field_name: str) -> DBTable:
         if not os.path.isdir(f"{DB_ROOT}/{table_name}"):
-            try:
-                os.makedirs(f"{DB_ROOT}/{table_name}")
-                new_table = DBTable(table_name, fields, key_field_name)
+            os.makedirs(f"{DB_ROOT}/{table_name}")
+            new_table = DBTable(table_name, fields, key_field_name)
 
-                with open(f"{DB_ROOT}/{table_name}/{table_name}.json", "w") as tables:
-                    json.dump({"len": 0,
-                               "name": table_name,
-                               "fields": [{field.name: str(field.type)} for field in fields],
-                               "key_field_name": key_field_name}, tables)
-
-            except ValueError:
-                self.delete_table(table_name)
-                raise ValueError
-
+            with open(f"{DB_ROOT}/{table_name}/{table_name}.json", "w") as tables:
+                json.dump({"name": table_name,
+                           # "filed": [{field.name: field.type} for field in fields],
+                           "key_field_name": key_field_name}, tables)
             self.my_tables.update({table_name: new_table})
             return new_table
 
@@ -281,12 +202,11 @@ class DataBase(DataBase):
     def get_table(self, table_name: str) -> DBTable:
         if table_name in self.my_tables.keys():
             return self.my_tables[table_name]
-
         if os.path.isdir(f"{DB_ROOT}/{table_name}"):
             with open(f"{DB_ROOT}/{table_name}/{table_name}.json") as tables:
                 table_data = json.load(tables)
                 new_table = DBTable(table_data["name"],
-                                    [DBField(list(item.keys())[0], list(item.values())[0]) for item in table_data["fields"]],
+                                    table_data["filed"],
                                     table_data["key_field_name"])
                 self.my_tables[table_name] = new_table
                 return new_table
@@ -308,3 +228,50 @@ class DataBase(DataBase):
             fields_to_join_by: List[str]
     ) -> List[Dict[str, Any]]:
         raise NotImplementedError
+
+
+my_data_base = DataBase()
+
+student = my_data_base.create_table("student", [DBField("id", int), DBField("name", str), DBField("age", int)], "id")
+
+student.insert_record({"id": 1, "name": "sss", "age": 78})
+
+student.insert_record({"id": 6, "name": "kjh"})
+
+student.insert_record({"id": 2, "age": 4})
+
+student.insert_record({"id": 10, "name": "d"})
+
+student.delete_record(1)
+
+student.insert_record({"id": 18, "name": "d"})
+
+student.update_record(18, {"name": "fd", "age": 43})
+
+print(student.get_record(6))
+
+# print(student.get_record(4))
+
+nechami = my_data_base.create_table("Nechami", [DBField("learn", str), DBField("google", int), DBField("bitachon", float)], "learn")
+
+nechami.insert_record({"learn": "bootcamp", "google": 8})
+
+sari = my_data_base.create_table("Sari", [DBField("learn", str), DBField("google", int), DBField("bitachon", float)], "learn")
+
+sari.insert_record({"learn": "bootcamp", "google": 8})
+
+print(my_data_base.num_tables())
+
+print(my_data_base.get_tables_names())
+
+my_data_base.delete_table("Sari")
+
+print(my_data_base.num_tables())
+
+print(my_data_base.get_tables_names())
+
+n = my_data_base.get_table("Nechami")
+
+n.insert_record({"learn": "OS", "bitachon": 5.5})
+
+student.update_record(18, {"name": "fd", "age": 43})
